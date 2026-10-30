@@ -279,7 +279,7 @@ function genLevel(depth){
 
 // ================= Spielzustand =================
 const S = { mode:'camp', depth:1, turn:0, seed:0, map:null, seen:null, vis:null, enemies:[], items:[], stairs:null,
-  run:null, floaters:[], parts:[], log:[], path:[], stepT:0, banner:0, shake:0, perkQueue:0, revived:false, ended:false };
+  run:null, floaters:[], parts:[], log:[], path:[], auto:false, toStairs:false, stepT:0, banner:0, shake:0, perkQueue:0, revived:false, ended:false };
 let P = null;
 
 function newPlayer(){
@@ -302,7 +302,7 @@ function startRun(seed){
 }
 
 function enterDepth(d){
-  S.depth = d; S.turn = 0; S.path = [];
+  S.depth = d; S.turn = 0; S.path = []; S.auto = false;
   const L = genLevel(d);
   S.map = L.m; S.seen = new Uint8Array(MAP_W*MAP_H); S.vis = new Uint8Array(MAP_W*MAP_H);
   S.enemies = []; S.items = []; S.floaters = []; S.parts = [];
@@ -417,7 +417,7 @@ function gainXp(x){
   while(P.xp >= XP_NEED(P.lv)){ P.xp -= XP_NEED(P.lv); P.lv++; S.perkQueue++; }
 }
 function hurtPlayer(amount, src){
-  P.hp -= amount; P.flash = 0.2; S.path = [];
+  P.hp -= amount; P.flash = 0.2; S.auto = false; if(!S.chase) S.path = [];
   S.shake = matchMediaReduce ? 0 : 0.18;
   floater(P.x, P.y, '-'+amount, '#d6493a');
   if(P.thorns && src && src.hp>0){ src.hp -= P.thorns; src.flash=0.15; if(src.hp<=0){ const d=ENEMIES[src.type]; S.run.kills++; S.run.glut+=Math.max(1,Math.round(d.glut*P.glutMul)); gainXp(d.xp); say(d.name+' an Dornen gestorben.'); if(d.boss){ win(); return; } } }
@@ -444,7 +444,7 @@ function pickup(){
 function drinkPotion(){
   if(S.mode!=='play' || P.potions<=0) return;
   if(P.hp>=P.maxhp){ say('Du bist schon bei vollen LP.'); return; }
-  P.potions--;
+  P.potions--; S.auto=false;
   const h = Math.round(P.maxhp*POTION_HEAL*P.potionMul);
   P.hp = Math.min(P.maxhp, P.hp+h);
   floater(P.x,P.y,'+'+h,'#6fcf7f'); burst(P.x,P.y,'#6fcf7f',10);
@@ -452,7 +452,7 @@ function drinkPotion(){
   S.path = [];
   endTurn();
 }
-function waitTurn(){ if(S.mode!=='play') return; S.path=[]; endTurn(); }
+function waitTurn(){ if(S.mode!=='play') return; S.auto=false; S.path=[]; endTurn(); }
 function descend(){
   if(S.mode!=='play' || !S.stairs || P.x!==S.stairs.x || P.y!==S.stairs.y) return;
   meta.deepest = Math.max(meta.deepest, S.depth+1); saveMeta();
@@ -516,8 +516,8 @@ function endTurn(){
   computeFov();
   const seenNow = visibleEnemies();
   if(!seenNow.length && S.turn%REGEN_TURNS===0 && P.hp<P.maxhp) P.hp++;
-  for(const e of seenNow) if(!before.has(e)) { S.path = []; break; }
-  if(S.perkQueue>0 && S.mode==='play'){ S.path=[]; openPerk(); }
+  for(const e of seenNow) if(!before.has(e)) { if(S.auto||S.path.length) say(ENEMIES[e.type].name+' in Sicht.'); S.path = []; S.auto = false; break; }
+  if(S.perkQueue>0 && S.mode==='play'){ S.path=[]; S.auto=false; openPerk(); }
   hud();
 }
 
@@ -533,7 +533,7 @@ function findPath(tx,ty){
     for(const [dx,dy] of DIRS){
       const nx=x+dx, ny=y+dy; if(!inMap(nx,ny)) continue; const j=idx(nx,ny);
       if(prev[j]!==-1 || !S.seen[j] || !canStep(x,y,dx,dy)) continue;
-      if(j!==goal && enemyAt(nx,ny)) continue;
+      if(j!==goal && S.vis[j] && enemyAt(nx,ny)) continue;
       prev[j]=i; q.push(j);
     }
   }
@@ -541,34 +541,58 @@ function findPath(tx,ty){
   const path=[]; for(let i=goal; i!==start; i=prev[i]) path.push([i%MAP_W,(i/MAP_W)|0]);
   return path.reverse();
 }
-function nearestUnexplored(){
+function nextExploreTarget(){
+  // Breitensuche ab Spieler: nächster bekannter Gegenstand oder nächste Grenze zu unerforschtem Boden
+  const itemAt = new Set(S.items.filter(it=>S.seen[idx(it.x,it.y)]).map(it=>idx(it.x,it.y)));
   const d = new Int32Array(MAP_W*MAP_H).fill(-1); const q=[idx(P.x,P.y)]; d[q[0]]=0;
   for(let h=0;h<q.length;h++){
     const i=q[h], x=i%MAP_W, y=(i/MAP_W)|0;
     for(const [dx,dy] of DIRS){ const nx=x+dx,ny=y+dy; if(!inMap(nx,ny)) continue; const j=idx(nx,ny);
-      if(d[j]>=0 || !S.seen[j] || !canStep(x,y,dx,dy)) continue;
+      if(d[j]>=0 || !S.seen[j] || !canStep(x,y,dx,dy) || (S.vis[j] && enemyAt(nx,ny))) continue;
       d[j]=d[i]+1;
-      for(const [ex,ey] of DIRS){ const ax=nx+ex, ay=ny+ey; if(inMap(ax,ay) && !S.seen[idx(ax,ay)]) return [nx,ny]; }
+      if(itemAt.has(j)) return [nx,ny];
+      for(const [ex,ey] of DIRS){ const ax=nx+ex, ay=ny+ey; if(inMap(ax,ay) && !S.seen[idx(ax,ay)] && walkable(ax,ay)) return [nx,ny]; }
       q.push(j);
     }
   }
   return null;
 }
+function stopAuto(msg){
+  S.chase = false;
+  const was = S.auto || S.path.length;
+  S.auto = false; S.path = [];
+  if(was && msg) say(msg);
+  hud();
+}
+function autoNext(){
+  S.chase = false;
+  const t = nextExploreTarget();
+  if(t){ const p = findPath(t[0],t[1]); if(p && p.length){ S.path = p; return; } }
+  // Nichts mehr zu erkunden: zur Treppe gehen und dort anhalten
+  if(S.stairs && S.seen[idx(S.stairs.x,S.stairs.y)] && !(P.x===S.stairs.x && P.y===S.stairs.y)){
+    const p = findPath(S.stairs.x,S.stairs.y);
+    if(p && p.length){ S.path = p; S.toStairs = true; return; }
+  }
+  S.auto = false; S.toStairs = false;
+  say(S.stairs && P.x===S.stairs.x && P.y===S.stairs.y ? 'Ebene erkundet. Du stehst auf der Treppe.' : 'Alles erkundet.');
+  hud();
+}
 function autoAction(){
   if(S.mode!=='play') return;
+  if(S.auto){ stopAuto('Erkunden angehalten.'); return; }
   if(S.stairs && P.x===S.stairs.x && P.y===S.stairs.y){ descend(); return; }
   const vis = visibleEnemies();
-  if(vis.length){
-    vis.sort((a,b)=>Math.max(Math.abs(a.x-P.x),Math.abs(a.y-P.y))-Math.max(Math.abs(b.x-P.x),Math.abs(b.y-P.y)));
-    tapTile(vis[0].x, vis[0].y); return;
+  vis.sort((a,b)=>Math.max(Math.abs(a.x-P.x),Math.abs(a.y-P.y))-Math.max(Math.abs(b.x-P.x),Math.abs(b.y-P.y)));
+  for(const e of vis){
+    if(Math.max(Math.abs(e.x-P.x),Math.abs(e.y-P.y))<=1 || findPath(e.x,e.y)){ tapTile(e.x, e.y); return; }
   }
-  const t = nearestUnexplored();
-  if(t){ tapTile(t[0],t[1]); return; }
-  if(S.stairs && S.seen[idx(S.stairs.x,S.stairs.y)]){ tapTile(S.stairs.x,S.stairs.y); return; }
-  say('Alles erkundet.');
+  S.auto = true; S.toStairs = false; S.stepT = 0;
+  autoNext();
+  hud();
 }
 function tapTile(tx,ty){
   if(S.mode!=='play') return;
+  S.auto = false;
   if(tx===P.x && ty===P.y){
     if(S.stairs && P.x===S.stairs.x && P.y===S.stairs.y) descend(); else waitTurn();
     return;
@@ -576,14 +600,16 @@ function tapTile(tx,ty){
   const dx=tx-P.x, dy=ty-P.y;
   if(Math.abs(dx)<=1 && Math.abs(dy)<=1){ S.path=[]; playerMove(dx,dy); return; }
   const p = findPath(tx,ty);
+  S.chase = !!(S.vis[idx(tx,ty)] && enemyAt(tx,ty));
   if(p){ S.path = p; S.stepT = 0; }
   else say('Da kommst du (noch) nicht hin.');
 }
 function walkStep(){
+  if(!S.path.length) S.chase = false;
   const [nx,ny] = S.path.shift();
   const r = playerMove(nx-P.x, ny-P.y);
-  if(r!=='move') S.path = [];
-  if(S.stairs && P.x===S.stairs.x && P.y===S.stairs.y && S.path.length) { S.path=[]; say('Eine Treppe nach unten. Tippe auf Hinab.'); }
+  if(r!=='move'){ S.path = []; S.chase = false; }
+  if(!S.auto && S.stairs && P.x===S.stairs.x && P.y===S.stairs.y && S.path.length) { S.path=[]; say('Eine Treppe nach unten. Tippe auf Hinab.'); }
 }
 
 // ================= Runden-Ende =================
@@ -779,9 +805,9 @@ function tick(dt){
   for(let i=S.floaters.length-1;i>=0;i--){ const f=S.floaters[i]; if(f.delay>0){ f.delay-=dt; continue; } f.life-=dt; if(f.life<=0) S.floaters.splice(i,1); }
   if(S.shake>0) S.shake-=dt;
   if(S.banner>0) S.banner-=dt;
-  if(S.mode==='play' && S.path.length){
+  if(S.mode==='play' && (S.path.length || S.auto)){
     S.stepT -= dt*1000;
-    if(S.stepT<=0){ S.stepT = STEP_MS; walkStep(); }
+    if(S.stepT<=0){ S.stepT = STEP_MS; if(S.path.length) walkStep(); else if(S.auto) autoNext(); if(!S.path.length && S.auto) autoNext(); }
   }
 }
 
@@ -809,7 +835,7 @@ function hud(){
   const onStairs = S.stairs && P.x===S.stairs.x && P.y===S.stairs.y;
   const b = $('bAction');
   b.classList.toggle('hot', !!onStairs);
-  b.innerHTML = onStairs ? 'Hinab<small>Nächste Tiefe</small>' : (visibleEnemies().length ? 'Angriff<small>Nächster Feind</small>' : 'Erkunden<small>Automatisch</small>');
+  b.innerHTML = S.auto ? 'Stopp<small>Erkunden</small>' : onStairs ? 'Hinab<small>Nächste Tiefe</small>' : (visibleEnemies().length ? 'Angriff<small>Nächster Feind</small>' : 'Erkunden<small>Automatisch</small>');
 }
 function renderLog(){ $('log').innerHTML = S.log.map(t=>'<div>'+t+'</div>').join(''); }
 
@@ -858,7 +884,10 @@ $('bMenu').addEventListener('click', e=>{ e.currentTarget.blur(); if(S.mode==='p
 document.addEventListener('visibilitychange', ()=>{ if(document.hidden && S.mode==='play'){ S.path=[]; setMode('menu'); } });
 
 let down = null;
-cv.addEventListener('pointerdown', e=>{ down = { x:e.clientX, y:e.clientY, id:e.pointerId }; });
+cv.addEventListener('pointerdown', e=>{
+  if(S.mode==='play' && (S.auto || S.path.length)){ stopAuto('Angehalten.'); down = null; return; }
+  down = { x:e.clientX, y:e.clientY, id:e.pointerId };
+});
 cv.addEventListener('pointerup', e=>{
   if(!down || down.id!==e.pointerId) return;
   const moved = Math.hypot(e.clientX-down.x, e.clientY-down.y); down = null;
@@ -874,7 +903,7 @@ document.addEventListener('keydown', ev=>{
   const k = ev.key.length===1 ? ev.key.toLowerCase() : ev.key;
   if(document.activeElement && document.activeElement!==document.body) document.activeElement.blur();
   if(S.mode==='play'){
-    if(KEYMOVE[k]){ ev.preventDefault(); S.path=[]; playerMove(...KEYMOVE[k]); return; }
+    if(KEYMOVE[k]){ ev.preventDefault(); S.path=[]; S.auto=false; playerMove(...KEYMOVE[k]); return; }
     if(k===' ' || k==='.'){ ev.preventDefault(); waitTurn(); return; }
     if(k==='t'){ drinkPotion(); return; }
     if(k==='Enter'){ ev.preventDefault(); autoAction(); return; }
@@ -892,7 +921,7 @@ resize();
 P = newPlayer(); S.map = null;
 setMode('camp');
 requestAnimationFrame(frame);
-window.__FT = { S, get P(){return P;}, startRun, tapTile, autoAction, choosePerk, drinkPotion, descend, genLevel, bfsDist, meta:()=>meta, setR:f=>{R=f;} };
+window.__FT = { autoNext, S, get P(){return P;}, startRun, tapTile, autoAction, choosePerk, drinkPotion, descend, genLevel, bfsDist, meta:()=>meta, setR:f=>{R=f;} };
 </script>
 
 </body>
