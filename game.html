@@ -1,0 +1,351 @@
+<title>Glühglas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gluten:wght@600;800&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+/* Layout: Vollbild-Nachtwiese als Spielfeld, schmales HUD oben, Overlay-Karte mittig. Bewusst nur dunkles Thema (Nacht). */
+:root{
+  --night:#0b1026; --night2:#1d2558; --glow:#ffd54a; --glow2:#fff2a8;
+  --bug:#c2553a; --bug2:#3a1712; --ink:#eef0ff; --muted:#a3abd9; --grass:#07140f;
+  --card:rgba(14,19,48,.86); --line:rgba(238,240,255,.18);
+  --f-display:"Gluten","Trebuchet MS",system-ui,sans-serif;
+  --f-ui:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--night);color:var(--ink);font-family:var(--f-ui);overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#app{position:relative;height:100%;overflow:hidden}
+#cv{display:block;width:100%;height:100%;touch-action:none}
+.hud{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;
+  padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  pointer-events:none;font-variant-numeric:tabular-nums}
+.score{font-family:var(--f-display);font-weight:800;font-size:2rem;line-height:1;color:var(--glow2);text-shadow:0 0 14px rgba(255,213,74,.55)}
+.combo{font-weight:700;font-size:.95rem;color:var(--glow);letter-spacing:.04em}
+.lives{margin-left:auto;display:flex;gap:6px}
+.life{width:12px;height:12px;border-radius:50%;background:var(--glow);box-shadow:0 0 10px var(--glow)}
+.life.off{background:transparent;box-shadow:none;border:2px solid var(--line)}
+.pause{pointer-events:auto;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:rgba(11,16,38,.5);color:var(--ink);font:700 1rem var(--f-ui);display:grid;place-items:center;cursor:pointer}
+.pause:focus-visible,.btn:focus-visible{outline:3px solid var(--glow);outline-offset:3px}
+.overlay{position:absolute;inset:0;display:grid;place-items:center;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:rgba(5,8,22,.35)}
+.card{width:100%;max-width:340px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px 20px;display:flex;flex-direction:column;gap:12px;text-align:center;backdrop-filter:blur(6px)}
+.card h1{margin:0;font-family:var(--f-display);font-weight:800;font-size:2.6rem;line-height:1;color:var(--glow2);text-shadow:0 0 22px rgba(255,213,74,.5);text-wrap:balance}
+.card p{margin:0;color:var(--muted);line-height:1.45}
+.card .big{font-family:var(--f-display);font-size:1.6rem;color:var(--ink)}
+.legend{display:flex;justify-content:center;gap:18px;font-size:.9rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--glow);box-shadow:0 0 8px var(--glow)}
+.dot.gold{width:13px;height:13px;background:var(--glow2);box-shadow:0 0 12px var(--glow2)}
+.dot.bug{border-radius:4px;background:var(--bug);box-shadow:none;border:1px solid var(--glow2)}
+.btn{margin-top:4px;border:0;border-radius:999px;padding:14px 20px;font:700 1.1rem var(--f-ui);background:var(--glow);color:#2a1d00;cursor:pointer;box-shadow:0 0 22px rgba(255,213,74,.45)}
+.hint{font-size:.8rem;color:var(--muted)}
+</style>
+
+<div id="app">
+  <canvas id="cv" aria-label="Spielfeld"></canvas>
+  <div class="hud">
+    <div class="score" id="score">0</div>
+    <div class="combo" id="combo"></div>
+    <div class="lives" id="lives"></div>
+    <button class="pause" id="pauseBtn" aria-label="Pause">II</button>
+  </div>
+  <div class="overlay" id="overlay">
+    <div class="card">
+      <h1 id="ovTitle">Glühglas</h1>
+      <p id="ovText">Zieh den Finger irgendwo über den Bildschirm und fang die Glühwürmchen mit dem Glas.</p>
+      <div class="legend" id="ovLegend">
+        <span><i class="dot"></i>+1</span>
+        <span><i class="dot gold"></i>+5 &amp; Leben</span>
+        <span><i class="dot bug"></i>Käfer meiden</span>
+      </div>
+      <button class="btn" id="ovBtn">Spielen</button>
+      <div class="hint" id="ovHint"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ===== Balance =====
+const LIVES = 3;          // Startleben (= Maximum)
+const JAR_W = 70, JAR_H = 78;
+const SPAWN_START = 0.95, SPAWN_MIN = 0.30;   // Sekunden zwischen Objekten
+const FALL_START = 110, FALL_MAX = 340;       // px/s
+const RAMP_TIME = 90;     // Sekunden bis volle Schwierigkeit
+const BUG_START = 0.18, BUG_MAX = 0.42;       // Käfer-Anteil
+const GOLD_CHANCE = 0.06; // Goldenes Glühwürmchen
+const COMBO_STEP = 5;     // alle 5 Fänge in Folge +1 Multiplikator
+const DRAG_GAIN = 1.25;   // Fingerweg -> Glasweg
+const KEY_SPEED = 520;    // px/s mit Pfeiltasten
+const MAX_PARTS = 400;
+
+// ===== Farben aus CSS-Tokens =====
+const css = getComputedStyle(document.documentElement);
+const tok = n => css.getPropertyValue(n).trim();
+const COL = { glow:tok('--glow'), glow2:tok('--glow2'), bug:tok('--bug'), bug2:tok('--bug2'),
+  grass:tok('--grass'), night:tok('--night'), night2:tok('--night2'), ink:tok('--ink') };
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const lerp = (a,b,t) => a+(b-a)*t;
+const rnd = (a,b) => a+Math.random()*(b-a);
+
+let W=0, H=0, dpr=1, bg=null, T=0;
+const jar = { x:0, flies:[] };
+const S = { mode:'menu', score:0, lives:LIVES, combo:0, t:0, spawnT:0.6, items:[], parts:[], pops:[], shake:0, caught:0, best:0 };
+try { S.best = +localStorage.getItem('gluehglas-best') || 0; } catch(e) {}
+
+const groundY = () => H - 26;
+const jarTop = () => groundY() - JAR_H;
+
+// ===== Hintergrund (gecacht) =====
+function buildBg(){
+  bg = document.createElement('canvas');
+  bg.width = Math.max(1, W*dpr|0); bg.height = Math.max(1, H*dpr|0);
+  const g = bg.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  const gr = g.createLinearGradient(0,0,0,H);
+  gr.addColorStop(0, COL.night); gr.addColorStop(1, COL.night2);
+  g.fillStyle = gr; g.fillRect(0,0,W,H);
+  let seed = 7; const r = () => (seed = (seed*16807)%2147483647)/2147483647;
+  for(let i=0;i<Math.round(W*H/4500);i++){
+    g.globalAlpha = 0.25 + r()*0.6; g.fillStyle = COL.ink;
+    const s = r()<0.1 ? 2 : 1; g.fillRect(r()*W, r()*H*0.75, s, s);
+  }
+  g.globalAlpha = 1;
+  // Mond
+  g.fillStyle = 'rgba(238,240,255,.9)'; g.beginPath(); g.arc(W*0.8, H*0.13, 18, 0, 7); g.fill();
+  g.fillStyle = COL.night; g.beginPath(); g.arc(W*0.8+8, H*0.13-5, 16, 0, 7); g.fill();
+  // Gras
+  g.fillStyle = COL.grass; g.fillRect(0, groundY(), W, H);
+  for(let x=-4;x<W+4;x+=5){
+    const h = 10 + r()*22, lean = (r()-0.5)*10;
+    g.beginPath(); g.moveTo(x, groundY()+2); g.quadraticCurveTo(x+lean*0.4, groundY()-h*0.5, x+lean, groundY()-h);
+    g.lineTo(x+4, groundY()+2); g.fill();
+  }
+}
+
+function resize(){
+  dpr = Math.min(window.devicePixelRatio||1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = Math.max(1, W*dpr|0); cv.height = Math.max(1, H*dpr|0);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  jar.x = clamp(jar.x || W/2, JAR_W/2, W-JAR_W/2);
+  buildBg();
+}
+window.addEventListener('resize', resize);
+
+// ===== Spielablauf =====
+function startGame(){
+  Object.assign(S, { mode:'play', score:0, lives:LIVES, combo:0, t:0, spawnT:0.6, items:[], parts:[], pops:[], shake:0, caught:0 });
+  jar.flies.length = 0; jar.x = W/2;
+  showOverlay(null); hud();
+}
+function setPause(p){
+  if(p && S.mode==='play'){ S.mode='pause'; showOverlay('pause'); }
+  else if(!p && S.mode==='pause'){ S.mode='play'; showOverlay(null); }
+}
+function gameOver(){
+  S.mode = 'over';
+  const rec = S.score > S.best;
+  if(rec){ S.best = S.score; try{ localStorage.setItem('gluehglas-best', S.best); }catch(e){} }
+  showOverlay('over', rec);
+}
+
+function spawn(){
+  const d = Math.min(1, S.t/RAMP_TIME);
+  const roll = Math.random();
+  const bugP = lerp(BUG_START, BUG_MAX, d);
+  const kind = roll < GOLD_CHANCE ? 'gold' : roll < GOLD_CHANCE+bugP ? 'bug' : 'fly';
+  S.items.push({ kind, x:rnd(24, W-24), y:-20, vy:lerp(FALL_START,FALL_MAX,d)*rnd(0.85,1.15)*(kind==='gold'?1.15:1),
+    ph:rnd(0,6.28), amp: kind==='bug' ? rnd(0,25) : rnd(30,80) });
+  S.spawnT = lerp(SPAWN_START, SPAWN_MIN, d) * rnd(0.8,1.2);
+}
+
+function burst(x,y,col,n,sp){
+  for(let i=0;i<n && S.parts.length<MAX_PARTS;i++){
+    const a = rnd(0,6.28), v = rnd(sp*0.3, sp);
+    S.parts.push({ x,y, vx:Math.cos(a)*v, vy:Math.sin(a)*v-40, life:rnd(0.4,0.8), max:0.8, col });
+  }
+}
+function pop(x,y,txt,col){ S.pops.push({x,y,txt,col,life:0.9}); }
+function buzz(ms){ try{ navigator.vibrate && navigator.vibrate(ms); }catch(e){} }
+
+function catchItem(it){
+  if(it.kind==='bug'){
+    S.lives--; S.combo=0; S.shake = reduceMotion ? 0 : 0.3;
+    burst(it.x, jarTop(), COL.bug, 18, 220); pop(it.x, jarTop()-10, 'Autsch', COL.bug); buzz(60);
+    if(S.lives<=0) gameOver();
+  } else {
+    S.combo++;
+    const mult = 1 + Math.floor(S.combo/COMBO_STEP);
+    const pts = (it.kind==='gold'?5:1) * mult;
+    S.score += pts; S.caught++;
+    if(it.kind==='gold' && S.lives<LIVES){ S.lives++; pop(it.x, jarTop()-34, '+Leben', COL.glow2); }
+    burst(it.x, jarTop(), it.kind==='gold'?COL.glow2:COL.glow, it.kind==='gold'?22:10, 160);
+    pop(it.x, jarTop()-12, '+'+pts, COL.glow2);
+    if(jar.flies.length<28) jar.flies.push({ ox:rnd(-0.38,0.38), oy:rnd(0.15,0.9), ph:rnd(0,6.28), gold:it.kind==='gold' });
+  }
+  hud();
+}
+
+const keys = {};
+function update(dt){
+  S.t += dt;
+  if(keys.ArrowLeft) jar.x -= KEY_SPEED*dt;
+  if(keys.ArrowRight) jar.x += KEY_SPEED*dt;
+  jar.x = clamp(jar.x, JAR_W/2, W-JAR_W/2);
+
+  S.spawnT -= dt; if(S.spawnT<=0) spawn();
+  const top = jarTop();
+  for(let i=S.items.length-1;i>=0;i--){
+    const it = S.items[i];
+    const py = it.y;
+    it.y += it.vy*dt;
+    it.x = clamp(it.x + Math.cos(T*2+it.ph)*it.amp*dt, 12, W-12);
+    if(py < top && it.y >= top && Math.abs(it.x-jar.x) < JAR_W/2-4){
+      S.items.splice(i,1); catchItem(it); if(S.mode!=='play') return; continue;
+    }
+    if(it.y > H+20){
+      if(it.kind!=='bug' && S.combo>0){ S.combo=0; hud(); }
+      S.items.splice(i,1);
+    }
+  }
+  if(S.shake>0) S.shake -= dt;
+}
+function updateFx(dt){
+  for(let i=S.parts.length-1;i>=0;i--){ const p=S.parts[i]; p.life-=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=260*dt; if(p.life<=0) S.parts.splice(i,1); }
+  for(let i=S.pops.length-1;i>=0;i--){ const p=S.pops[i]; p.life-=dt; p.y-=40*dt; if(p.life<=0) S.pops.splice(i,1); }
+}
+
+// ===== Zeichnen =====
+function drawFly(x,y,gold,alpha){
+  const r = gold ? 24 : 15;
+  const g = ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0, gold?'rgba(255,242,168,.95)':'rgba(255,213,74,.85)');
+  g.addColorStop(1, 'rgba(255,213,74,0)');
+  ctx.globalAlpha = alpha; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  ctx.fillStyle = gold ? '#fff' : COL.glow2; ctx.beginPath(); ctx.arc(x,y,gold?4.5:3,0,7); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+function drawBug(x,y,t){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(Math.sin(t*6)*0.15);
+  ctx.strokeStyle = COL.bug2; ctx.lineWidth = 2;
+  for(let i=-1;i<=1;i++){ ctx.beginPath(); ctx.moveTo(-6,i*4); ctx.lineTo(-13,i*6+2); ctx.moveTo(6,i*4); ctx.lineTo(13,i*6+2); ctx.stroke(); }
+  ctx.fillStyle = COL.bug; ctx.strokeStyle = 'rgba(255,242,168,.55)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(0,0,8,10,0,0,7); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = COL.bug2; ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(0,9); ctx.stroke();
+  ctx.fillStyle = COL.bug2; ctx.beginPath(); ctx.arc(0,11,4,0,7); ctx.fill();
+  ctx.restore();
+}
+function drawJar(){
+  const x = jar.x - JAR_W/2, y = jarTop(), w = JAR_W, h = JAR_H;
+  const fill = Math.min(1, S.caught/40);
+  // Leuchten nach außen, wächst mit Fängen
+  const g = ctx.createRadialGradient(jar.x, y+h*0.6, 4, jar.x, y+h*0.6, 60+60*fill);
+  g.addColorStop(0, `rgba(255,213,74,${0.12+0.35*fill})`); g.addColorStop(1,'rgba(255,213,74,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(jar.x, y+h*0.6, 60+60*fill, 0, 7); ctx.fill();
+  // Glaskörper
+  ctx.fillStyle = 'rgba(170,190,255,.10)'; ctx.strokeStyle = 'rgba(238,240,255,.6)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y+6, w, h-6, [6,6,14,14]) : ctx.rect(x, y+6, w, h-6); ctx.fill(); ctx.stroke();
+  // Gefangene Glühwürmchen
+  for(const f of jar.flies){
+    const fx = jar.x + f.ox*w + Math.sin(T*1.5+f.ph)*4, fy = y + 10 + f.oy*(h-18) + Math.cos(T*1.2+f.ph)*3;
+    drawFly(fx, fy, f.gold, 0.55+0.45*Math.sin(T*3+f.ph)**2);
+  }
+  // Rand oben
+  ctx.strokeStyle = 'rgba(238,240,255,.85)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(jar.x, y+6, w/2+3, 5, 0, 0, 7); ctx.stroke();
+  // Glanz
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x+10, y+18); ctx.lineTo(x+10, y+h-14); ctx.stroke();
+}
+function draw(){
+  ctx.save();
+  if(S.shake>0){ ctx.translate(rnd(-5,5)*S.shake*3, rnd(-5,5)*S.shake*3); }
+  if(bg) ctx.drawImage(bg, 0, 0, W, H);
+  for(const it of S.items){
+    if(it.kind==='bug') drawBug(it.x, it.y, T+it.ph);
+    else drawFly(it.x, it.y, it.kind==='gold', 0.75+0.25*Math.sin(T*8+it.ph));
+  }
+  drawJar();
+  for(const p of S.parts){ ctx.globalAlpha = Math.max(0,p.life/p.max); ctx.fillStyle = p.col; ctx.fillRect(p.x-1.5,p.y-1.5,3,3); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.font = '700 18px "Atkinson Hyperlegible", system-ui, sans-serif';
+  for(const p of S.pops){ ctx.globalAlpha = Math.min(1,p.life*1.6); ctx.fillStyle = p.col; ctx.fillText(p.txt, p.x, p.y); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ===== HUD & Overlay =====
+function hud(){
+  $('score').textContent = S.score;
+  const mult = 1 + Math.floor(S.combo/COMBO_STEP);
+  $('combo').textContent = mult>1 ? '×'+mult : (S.combo>1 ? S.combo+' in Folge' : '');
+  const l = $('lives'); l.innerHTML = '';
+  for(let i=0;i<LIVES;i++){ const d=document.createElement('i'); d.className='life'+(i<S.lives?'':' off'); l.appendChild(d); }
+  $('pauseBtn').hidden = S.mode!=='play';
+}
+function showOverlay(kind, record){
+  const ov = $('overlay');
+  if(!kind){ ov.hidden = true; hud(); return; }
+  ov.hidden = false;
+  $('ovLegend').hidden = kind!=='menu';
+  if(kind==='menu'){
+    $('ovTitle').textContent = 'Glühglas';
+    $('ovText').textContent = 'Zieh den Finger irgendwo über den Bildschirm und fang die Glühwürmchen mit dem Glas.';
+    $('ovBtn').textContent = 'Spielen';
+    $('ovHint').textContent = S.best ? 'Rekord: '+S.best : 'Am PC: Pfeiltasten und Leertaste';
+  } else if(kind==='pause'){
+    $('ovTitle').textContent = 'Pause';
+    $('ovText').textContent = 'Punkte: '+S.score;
+    $('ovBtn').textContent = 'Weiter';
+    $('ovHint').textContent = '';
+  } else {
+    $('ovTitle').textContent = record ? 'Neuer Rekord!' : 'Vorbei';
+    $('ovText').innerHTML = '<span class="big">'+S.score+' Punkte</span>';
+    $('ovBtn').textContent = 'Nochmal';
+    $('ovHint').textContent = 'Rekord: '+S.best+' · Glühwürmchen gefangen: '+S.caught;
+  }
+  hud();
+}
+$('ovBtn').addEventListener('click', e => { e.currentTarget.blur(); S.mode==='pause' ? setPause(false) : startGame(); });
+$('pauseBtn').addEventListener('click', e => { e.currentTarget.blur(); setPause(true); });
+document.addEventListener('visibilitychange', () => { if(document.hidden) setPause(true); });
+
+// ===== Eingabe =====
+let drag = null;
+cv.addEventListener('pointerdown', e => {
+  if(S.mode!=='play') return;
+  drag = { id:e.pointerId, sx:e.clientX, jx:jar.x };
+  try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+});
+cv.addEventListener('pointermove', e => {
+  if(!drag || e.pointerId!==drag.id || S.mode!=='play') return;
+  const nx = drag.jx + (e.clientX-drag.sx)*DRAG_GAIN;
+  jar.x = clamp(nx, JAR_W/2, W-JAR_W/2);
+  if(jar.x!==nx){ drag.jx = jar.x; drag.sx = e.clientX; }
+});
+const endDrag = e => { if(drag && e.pointerId===drag.id) drag = null; };
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+document.addEventListener('keydown', e => {
+  if(e.key==='ArrowLeft'||e.key==='ArrowRight'){ keys[e.key]=true; e.preventDefault(); }
+  if(e.key===' '||e.key==='Enter'){
+    e.preventDefault(); if(document.activeElement) document.activeElement.blur();
+    if(S.mode==='play') setPause(true); else if(S.mode==='pause') setPause(false); else startGame();
+  }
+  if(e.key==='p'||e.key==='P'||e.key==='Escape') setPause(S.mode==='play');
+});
+document.addEventListener('keyup', e => { keys[e.key]=false; });
+
+// ===== Schleife =====
+let last = performance.now();
+function frame(now){
+  const dt = Math.min(0.05, (now-last)/1000); last = now; T += dt;
+  if(S.mode==='play') update(dt);
+  updateFx(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+resize(); showOverlay('menu'); requestAnimationFrame(frame);
+</script>
