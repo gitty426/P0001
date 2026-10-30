@@ -132,6 +132,7 @@ button:focus-visible{outline:3px solid var(--glut);outline-offset:2px}
         <div><b>Tippen</b> auf ein Feld: dorthin laufen.</div>
         <div><b>Tippen</b> auf einen Gegner: hinlaufen und angreifen.</div>
         <div><b>Tippen</b> auf dich selbst: einen Zug warten.</div>
+        <div><b>Wischen</b> in eine Richtung (auch schräg): ein Feld gehen oder angreifen.</div>
         <div><b>Suchen</b> läuft zum nächsten sichtbaren Gegner, sonst zu unerforschten Bereichen. Auf der Treppe wird daraus <b>Hinab</b>.</div>
         <div>Am PC: Pfeiltasten oder WASD (QEZC diagonal), Leertaste warten, T Trank, Enter Aktion.</div>
       </div>
@@ -154,7 +155,8 @@ const GLUT_DEPTH_BONUS = 4;           // Glut pro erreichter Tiefe
 const GLUT_WIN_BONUS = 40;
 const ENEMY_SCALE = 0.12;             // +12 % LP/Angriff pro Tiefe über der Mindesttiefe
 const ENEMIES_BASE = 5, ENEMIES_PER_DEPTH = 2;
-const STEP_MS = 110;                  // Tempo beim automatischen Laufen
+const STEP_MS = 110;
+const SWIPE_MIN = 28;                 // px Mindestweg für eine Wischgeste                  // Tempo beim automatischen Laufen
 
 const ENEMIES = {
   rat:   { name:'Ratte',          hp:5,  atk:2, def:0, xp:2, glut:1, min:1, max:2, w:5 },
@@ -880,8 +882,17 @@ cv.addEventListener('pointerdown', e=>{
 });
 cv.addEventListener('pointerup', e=>{
   if(!down || down.id!==e.pointerId) return;
-  const moved = Math.hypot(e.clientX-down.x, e.clientY-down.y); down = null;
-  if(moved>14 || S.mode!=='play') return;
+  const ddx = e.clientX-down.x, ddy = e.clientY-down.y, moved = Math.hypot(ddx, ddy); down = null;
+  if(S.mode!=='play') return;
+  if(moved>=SWIPE_MIN){
+    // Wischen: ein Feld in eine von 8 Richtungen (45°-Sektoren), greift an, wenn dort ein Gegner steht
+    const sector = Math.round(Math.atan2(ddy, ddx) / (Math.PI/4));
+    const dir = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]][(sector+8)%8];
+    S.auto = false; S.path = [];
+    if(!playerMove(dir[0], dir[1])) say('Da ist eine Wand.');
+    return;
+  }
+  if(moved>14) return;
   const r = cv.getBoundingClientRect();
   const wx = e.clientX - r.left + Math.round(camX), wy = e.clientY - r.top + Math.round(camY);
   tapTile(Math.floor(wx/TS), Math.floor(wy/TS));
